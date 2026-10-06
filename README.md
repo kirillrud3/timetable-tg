@@ -1,0 +1,192 @@
+# Бот с расписанием БСЦ26-01 (СибГУ)
+
+Telegram-бот на aiogram 3. Присылает в личку расписание группы из файла `data/schedule.json`.
+Сайт вуза бот не парсит: единственный источник данных — этот JSON.
+
+- **07:00** каждый день — пары на сегодня (если пар нет, ничего не приходит);
+- **воскресенье, 18:00** — расписание на следующую неделю;
+- время — `Asia/Krasnoyarsk`.
+
+## Команды
+
+| Команда | Что делает |
+|---|---|
+| `/start` | справка |
+| `/today`, `/tomorrow` | пары на сегодня / завтра |
+| `/week`, `/next` | текущая / следующая неделя |
+| `/info` | номер недели сегодня, даты недели, когда обновлялся JSON, сколько в нём пар |
+| `/json` | прислать текущий `schedule.json` файлом |
+| `/setweek 1` или `/setweek 2` | сказать, какая неделя идёт **сейчас** (если чередование сбилось из-за каникул или праздников) |
+| отправить `.json` файлом | показать изменения и предложить «Применить» / «Отмена» |
+
+Бот отвечает только пользователю `ADMIN_ID`, остальных игнорирует.
+
+## 1. Токен и свой ID
+
+1. Откройте [@BotFather](https://t.me/BotFather), отправьте `/newbot`, придумайте имя и username (должен заканчиваться на `bot`).
+   BotFather пришлёт токен вида `123456789:AA...` — это `BOT_TOKEN`.
+2. Откройте [@userinfobot](https://t.me/userinfobot) и нажмите Start — он покажет ваш `Id` (число). Это `ADMIN_ID`.
+3. Найдите своего бота в Telegram и нажмите **Start**. Без этого бот не сможет писать вам первым.
+
+## 2. Установка на Ubuntu
+
+```bash
+sudo apt update
+sudo apt install -y python3 python3-venv git
+
+# отдельный пользователь для бота
+sudo useradd --system --create-home --shell /usr/sbin/nologin botuser
+
+# код в /opt/schedule-bot
+sudo git clone https://github.com/kirillrud3/timetable-tg.git /opt/schedule-bot
+sudo chown -R botuser:botuser /opt/schedule-bot
+cd /opt/schedule-bot
+
+# виртуальное окружение и зависимости (нужен Python 3.11+)
+sudo -u botuser python3 -m venv .venv
+sudo -u botuser .venv/bin/pip install -r requirements.txt
+
+# настройки
+sudo -u botuser cp .env.example .env
+sudo -u botuser nano .env       # впишите BOT_TOKEN, ADMIN_ID, SUBGROUP
+sudo chmod 600 .env
+```
+
+`.env`:
+
+```ini
+BOT_TOKEN=123456789:AA...
+ADMIN_ID=123456789
+SUBGROUP=2            # 1, 2 или пусто — показывать пары обеих подгрупп
+TZ=Asia/Krasnoyarsk
+SCHEDULE_PATH=data/schedule.json
+```
+
+Проверка (необязательно): тесты и пробный запуск вручную.
+
+```bash
+sudo -u botuser .venv/bin/python -m pytest -q
+sudo -u botuser .venv/bin/python -m bot.main     # Ctrl+C для остановки
+```
+
+### systemd
+
+```bash
+sudo cp deploy/schedule-bot.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now schedule-bot
+sudo systemctl status schedule-bot
+```
+
+Логи:
+
+```bash
+journalctl -u schedule-bot -f
+# или файл с ротацией
+tail -f /opt/schedule-bot/logs/bot.log
+```
+
+Если ставите в другую папку или под другим пользователем — поправьте `User=` и пути в `deploy/schedule-bot.service`.
+
+Обновить код бота:
+
+```bash
+cd /opt/schedule-bot && sudo -u botuser git pull && sudo systemctl restart schedule-bot
+```
+
+## 3. Как обновлять расписание
+
+### Вариант А: отправить JSON боту
+
+1. `/json` — бот пришлёт текущий файл.
+2. Поправьте его и отправьте боту обратно **файлом** (как документ, с расширением `.json`).
+3. Бот проверит файл. Если что-то не так (нет `weeks` с ключами `"1"` и `"2"`, время не в формате `HH:MM`,
+   у занятия нет `subject`, сломан синтаксис JSON), он напишет, что именно, и ничего не изменит.
+4. Если файл в порядке, бот пришлёт сводку «⚠️ Изменения в расписании»: добавленные, удалённые
+   и изменённые пары (окончание, тип, аудитория, преподаватель, подгруппа) с неделей и днём.
+   Пары чужой подгруппы помечены «(не ваша подгруппа)».
+5. Нажмите **✅ Применить**. Старая версия сохранится в `data/history/schedule_<дата_время>.json`,
+   новая запишется в `data/schedule.json`, `updated_at` станет сегодняшней датой.
+
+### Вариант Б: поправить файл на сервере
+
+```bash
+sudo -u botuser nano /opt/schedule-bot/data/schedule.json
+```
+
+Перезапуск не нужен: бот проверяет время изменения файла перед каждой командой и раз в минуту
+и перечитывает его. Если после правки JSON сломан, бот напишет вам об ошибке и продолжит работать
+на последней валидной версии, пока файл не исправят.
+
+### Пример: поменять аудиторию у одной пары
+
+Допустим, лекция по линейной алгебре в понедельник 2-й недели переехала из Л-913 в Л-915.
+Найдите в `weeks → "2" → monday` нужное занятие и поменяйте `room` и `raw`:
+
+```diff
+           {
+             "start": "08:00",
+             "end": "09:30",
+             "subject": "ЛИНЕЙНАЯ АЛГЕБРА И АНАЛИТИЧЕСКАЯ ГЕОМЕТРИЯ",
+             "type": "Лекция",
+             "teacher": { "name": "Мыльников А. Л.", "id": 2616 },
+             "place": {
+               "building": "Л",
+-              "room": "913",
+-              "raw": "корп. \"Л\" каб. \"913\"",
++              "room": "915",
++              "raw": "корп. \"Л\" каб. \"915\"",
+               "address": "пр. имени газеты Красноярский рабочий, 31, строение 7"
+             },
+             "subgroup": null
+           },
+```
+
+Бот показывает аудиторию как `корп. <building>, каб. <room>`, поэтому главное — `room` (и `building`, если
+меняется корпус). Сохраните файл — через минуту (или при следующей команде) бот его подхватит.
+Проверить: `/week` или `/next`.
+
+Если правите на сервере, `updated_at` обновите сами — бот меняет его только при загрузке через Telegram.
+
+## Формат `schedule.json`
+
+```jsonc
+{
+  "group": "БСЦ26-01",
+  "week_anchor": { "monday": "2026-10-05", "week": 2 },  // неделя с этого понедельника — 2-я
+  "updated_at": "2026-10-06",
+  "weeks": {
+    "1": [ { "day": "monday", "day_ru": "Понедельник", "lessons": [ /* занятия */ ] } ],
+    "2": [ /* … */ ]
+  }
+}
+```
+
+- Недели `"1"` и `"2"` чередуются от `week_anchor`: чётное число недель от якоря — тот же номер, нечётное — другой.
+- День без пар просто не указывается.
+- `subgroup: null` — занятие для всей группы; `teacher` и `place` могут быть `null`.
+- Если чередование сбилось, проще всего отправить `/setweek N` — бот сам пересчитает `week_anchor`.
+
+## Структура
+
+```
+bot/
+  main.py        запуск, логирование, планировщик
+  config.py      чтение .env
+  schedule.py    загрузка, валидация, перечитывание по mtime, атомарная запись, history
+  weeks.py       номер недели по дате, даты дней, /setweek
+  diff.py        сравнение двух версий расписания
+  formatter.py   оформление сообщений
+  handlers.py    команды, приём JSON, кнопки
+data/schedule.json
+tests/
+deploy/schedule-bot.service
+```
+
+## Разработка
+
+```bash
+python3 -m venv .venv && . .venv/bin/activate
+pip install -r requirements.txt
+pytest -q
+```

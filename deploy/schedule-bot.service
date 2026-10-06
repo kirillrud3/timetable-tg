@@ -1,0 +1,16 @@
+[Unit]
+Description=Telegram-бот с расписанием СибГУ
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=botuser
+WorkingDirectory=/opt/schedule-bot
+ExecStart=/opt/schedule-bot/.venv/bin/python -m bot.main
+Restart=always
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
