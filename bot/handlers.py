@@ -25,6 +25,7 @@ from . import diff as diff_mod
 from . import formatter
 from .config import Config
 from .schedule import ScheduleError, ScheduleStore, dumps, parse
+from .settings import MAX_REMINDER_OFFSET, SettingsStore
 from .weeks import apply_setweek, monday_of, week_number_for
 
 log = logging.getLogger(__name__)
@@ -138,7 +139,9 @@ async def cmd_next(message: Message, config: Config, store: ScheduleStore) -> No
 
 
 @router.message(Command("info"))
-async def cmd_info(message: Message, config: Config, store: ScheduleStore) -> None:
+async def cmd_info(
+    message: Message, config: Config, store: ScheduleStore, settings: SettingsStore
+) -> None:
     if store.data is None:
         await no_schedule(message, store)
         return
@@ -146,6 +149,7 @@ async def cmd_info(message: Message, config: Config, store: ScheduleStore) -> No
     mtime_text = mtime.strftime("%d.%m.%Y %H:%M:%S") + " (время сервера)" if mtime else None
     await message.answer(
         formatter.format_info(store.data, today(config), config.subgroup, mtime_text, store.last_error)
+        + "\n\n" + reminder_status(settings)
     )
 
 
@@ -192,6 +196,44 @@ async def cmd_setweek(
     )
     if backup:
         text += f"\nСтарая версия: <code>{formatter.esc(backup.relative_to(store.path.parent))}</code>"
+    await message.answer(text)
+
+
+def reminder_status(settings: SettingsStore) -> str:
+    s = settings.settings
+    if not s.reminders_enabled:
+        return "🔕 Напоминания после пар выключены."
+    return (
+        f"🔔 Напоминаю о следующей паре через <b>{s.reminder_offset_min} мин</b> после конца занятия."
+    )
+
+
+@router.message(Command("reminder_time", "reminder-time", "reminder"))
+async def cmd_reminder_time(message: Message, command: CommandObject, settings: SettingsStore) -> None:
+    arg = (command.args or "").strip().lower()
+    if not arg:
+        await message.answer(
+            reminder_status(settings)
+            + "\n\n<code>/reminder_time 5</code> — через сколько минут после конца пары напоминать "
+            f"(0–{MAX_REMINDER_OFFSET})\n"
+            "<code>/reminder_time off</code> — выключить, <code>/reminder_time on</code> — включить"
+        )
+        return
+    if arg in ("off", "выкл", "нет"):
+        settings.update(reminders_enabled=False)
+    elif arg in ("on", "вкл", "да"):
+        settings.update(reminders_enabled=True)
+    elif arg.isdigit() and int(arg) <= MAX_REMINDER_OFFSET:
+        settings.update(reminders_enabled=True, reminder_offset_min=int(arg))
+    else:
+        await message.answer(
+            f"Нужно число минут от 0 до {MAX_REMINDER_OFFSET}, <code>on</code> или <code>off</code>. "
+            "Например: <code>/reminder_time 5</code>"
+        )
+        return
+    text = "✅ " + reminder_status(settings)
+    if settings.settings.reminders_enabled:
+        text += "\nЕсли перерыв короче, напомню к началу следующей пары."
     await message.answer(text)
 
 

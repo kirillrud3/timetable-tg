@@ -7,3 +7,4 @@ __pycache__/
 logs/
 data/history/*
 !data/history/.gitkeep
+data/settings.json
